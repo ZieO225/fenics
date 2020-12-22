@@ -1,0 +1,247 @@
+""" brouillon """
+from __future__ import print_function
+from dolfin import *
+from fenics import *
+import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
+from numpy.fft import fft, ifft
+
+
+
+img = Image.open("point.jpg")
+img = np.sum(img,2)/3
+#img.show()
+img = np.array(img)
+#print(nabla_grad(img))
+
+N = len(img)-1# pourque le nombre de noeud corespond avec le nombre de pixel
+#print(N)
+
+mesh = UnitSquareMesh(N, N)
+x = mesh.coordinates().reshape((-1, 2))# cordonné du maillage
+
+
+
+# cree le pas et construire un tableau (N+1*N+1,2)
+h = 1./N
+ii, jj = x[:, 0]/h, x[:, 1]/h
+ii = np.array(ii, dtype=int)
+jj = np.array(jj, dtype=int)
+#print(len(np.array(jj)))
+#print(np.asarray(x).shape) # taille de x
+
+#plot(mesh)
+#plt.show()
+#print("difference")
+image_values = img[ii, jj] # adapte les pixels aux noeuds
+#print(image_values)
+V = FunctionSpace(mesh, 'Lagrange', 1)
+p_etoile = Function(V)
+
+
+d2vm = dof_to_vertex_map(V) #
+image_values = image_values[d2vm] # reordonne par ordre croissante
+#print(image_values)
+p_etoile.vector()[:] = image_values
+
+""" calcule des phi ( fonction propres) """
+
+phi_D = Constant(0.0) #
+
+def boundary(x, on_boundary):
+    return on_boundary
+"""la fonction  on_boundary pour marquer la limite doit retourner une valeur booléenne : Vrai si la valeur donnée
+ x se situe à la limite de Dirichlet et Faux autrement. L'argument on_boundary est fourni
+par DOLFIN et est égal à True si x se trouve sur la limite physique du maillage. Dans le cas présent, où
+nous sommes censés retourner Vrai pour tous les points de la frontière, nous pouvons simplement retourner la valeur fournie
+de on_boundary . La fonction on_boundary sera appelée pour chaque point discret de la maille, qui
+nous permet d'avoir des limites où u sont connus aussi à l'intérieur du domaine, si désiré.
+On peut également omettre l'argument on_boundary, mais dans ce cas, nous devons tester la valeur de l'argument
+coordonnées en x :
+"""
+bc = DirichletBC(V, phi_D, boundary)
+""" phi_D est une instance contenant les valeurs phi_d, et boundary est une fonction (ou objet) décrivant
+si un point se trouve sur la frontière où phi est spécifié."""
+
+# le probleme variationnel
+
+phi = TrialFunction(V)
+v = TestFunction(V) # fonction test
+#d = dot(Constant(1),v)*dx
+a = dot(grad(phi), grad(v))*dx # forme billineaire
+b = dot(phi,v)*dx # le second terme
+
+# assemblage
+
+#asm = SystemAssembler(a,d)
+A = PETScMatrix()
+assemble(a, tensor = A)
+#asm1 = SystemAssembler(b,d)
+B = PETScMatrix()
+assemble(b,tensor = B)
+#bc.zero(B)
+bc.apply(A)          # apply the boundary conditions
+bc.apply(B)
+
+#resolution des fonctions propres / ajout des parametres pour assurer la convergence
+
+solver = SLEPcEigenSolver(A,B)
+solver.parameters["solver"] = "krylov-schur"
+solver.parameters["spectrum"] = "target magnitude"
+solver.parameters["problem_type"] = "gen_hermitian"
+solver.parameters["spectral_transform"] = "shift-and-invert"
+solver.parameters["spectral_shift"] = 10.0
+
+
+
+""" calcul de phi0 """
+
+def phi_0_boundary(x, on_boundary):
+
+    return on_boundary
+
+bc_1 = DirichletBC(V, p_etoile, phi_0_boundary)
+
+#Define variational problem
+phi0 = TrialFunction(V)
+v = TestFunction(V)
+f = Constant(0)
+a = inner(nabla_grad(phi0), nabla_grad(v))*dx
+#a = dot(grad(phi0), grad(v))*dx
+L = f*v*dx
+
+
+# Compute solution
+phi0 = Function(V)
+solve(a == L, phi0, bc_1)
+plot(phi0)
+plt.savefig("resultat/phi0.png")
+
+#print(phi_0.vector()[:])
+
+""" calcule des pi et P """
+
+#taille_phi = len(phi.vector()[:])
+
+
+P = Function(V)
+K = 5
+solver.solve(K)
+phi = Function(V)
+P = phi0
+for i in range(K):
+    r, c, rx, cx = solver.get_eigenpair(i)
+    #print ('eigenvalue:', r)
+    phi.vector()[:] = rx
+    plot(phi)
+    plt.savefig("resultat/phi_%s.png" %i)
+    p_i = assemble((p_etoile-phi0)*phi*dx) # clacule des pi
+    P.vector()[:]  = P.vector()[:] + p_i*phi.vector()[:]
+
+
+#print(P.vector()[:])
+#plot(p_etoile)
+#plt.show()
+plot(P)
+#print(P.vector()[:])
+plt.savefig("resultat/P.png")
+#plt.show()
+
+""" calcule avec la matrice A """
+
+
+new_phi = TrialFunction(V)
+v = TestFunction(V) # fonction test
+d = dot(Constant(1),v)*dx
+#x1 = grad(P).vector()
+gradP1 = project(grad(p_etoile)[0], V)
+gradP2 = project(grad(p_etoile)[1], V)
+#grad(p_etoile)[1] = Function(V)
+#grad(p_etoile)[0] = Function(V)
+#gradp = grad(p_etoile)
+#gradP2 = interpolate(t, V)
+#print(grad(p_etoile))
+#def matrix(u):
+
+    #return 1/norm(u, 'l2')
+#gradu = project(grad(p_etoile),V)
+
+#null_vec = Vector(grad(p_etoile).vector())
+norm_p_etoile = np.max(np.sum((gradP1.vector()[:]**2 +  gradP2.vector()[:]**2)))
+#norm_p_etoile = (gradP1.vector()[:].norm('l2') +  gradP2.vector()[:].norm('l2'))
+#norm_p = dot(grad(p_etoile),grad(p_etoile))
+a_1 = dot(float(1/norm_p_etoile)*grad(new_phi), grad(v))*dx # forme billineaire
+
+#a_1 = dot(1.0/p_etoile*grad(new_phi), grad(v))*dx# forme billineaire
+
+b_1 = dot(new_phi, v)*dx # le second terme
+
+# assemblage
+
+new_asm = SystemAssembler(a_1,d)
+new_A = PETScMatrix()
+new_asm.assemble(new_A)
+new_asm1 = SystemAssembler(b_1,d)
+new_B = PETScMatrix()
+new_asm1.assemble(new_B)
+bc.zero(B)
+
+solver = SLEPcEigenSolver(new_A,new_B)
+solver.parameters["solver"] = "krylov-schur"
+solver.parameters["spectrum"] = "target magnitude"
+solver.parameters["problem_type"] = "gen_hermitian"
+solver.parameters["spectral_transform"] = "shift-and-invert"
+solver.parameters["spectral_shift"] = 10.0
+
+""" calcul de new_phi0 """
+
+def phi_0_boundary(x, on_boundary):
+
+    return on_boundary
+
+bc_1 = DirichletBC(V, p_etoile, phi_0_boundary)
+
+#Define variational problem
+new_phi0 = TrialFunction(V)
+v1 = TestFunction(V)
+f1 = Constant(0)
+
+#a = inner(float(1/norm_p_etoile)*nabla_grad(new_phi_0), nabla_grad(v))*dx
+a_2 = dot(float(1/norm_p_etoile)*grad(new_phi0), grad(v))*dx # forme billineaire
+#a_2 = dot(1.0/p_etoile*grad(new_phi0), grad(v))*dx
+#a_2 = matrix(p_etoile)*inner(nabla_grad(new_phi0), nabla_grad(v))*dx
+L = f*v1*dx
+
+
+# Compute solution
+new_phi0 = Function(V)
+solve(a_2 == L, new_phi0, bc_1)
+print(new_phi0.vector()[:])
+
+plot(new_phi0)
+#plt.show()
+plt.savefig("resultat/new_phi0.png")
+
+""" calacul des news_P """
+
+
+P_1 = Function(V)
+#K = 10
+solver.solve(K)
+new_phi = Function(V)
+P_1 = new_phi0
+for i in range(K):
+    r, c, rx, cx = solver.get_eigenpair(i)
+    #print ('eigenvalue:', r)
+    new_phi.vector()[:] = rx
+    plot(new_phi)
+    plt.savefig("resultat/new_phi_%s.png" %i)
+    p_i = assemble((p_etoile-new_phi0)*new_phi*dx) # clacule des pi
+    P_1.vector()[:]  = P_1.vector()[:] + p_i*new_phi.vector()[:]
+
+
+#print(P_1.vector()[:])
+plot(P_1)
+plt.savefig("resultat/P_1.png")
+#plt.show()
